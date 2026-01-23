@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+
+# System
+.DS_Store
+venv/
+__pycache__/
+*.pyc
+.env
+media/
+db.sqlite3

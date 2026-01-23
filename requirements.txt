@@ -1,0 +1,16 @@
+django
+djangorestframework
+django-cors-headers
+djangorestframework-simplejwt
+opencv-python-headless==4.5.5.64
+numpy<2.0
+pillow
+gunicorn
+whitenoise
+dj-database-url
+psycopg2-binary
+django-storages
+
+cloudinary
+django-cloudinary-storage
+
