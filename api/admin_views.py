@@ -7,6 +7,41 @@ from .permissions import IsAdminUser
 from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
+import os
+
+class EmergencyCreateAdmin(APIView):
+    """
+    Temporary view to create superuser if shell is inaccessible.
+    Protected by the DJANGO_SUPERUSER_PASSWORD itself.
+    """
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        env_password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
+        param_password = request.query_params.get('key')
+        
+        if not env_password:
+            return Response({"error": "Env var DJANGO_SUPERUSER_PASSWORD not set on server."}, status=400)
+
+        if param_password != env_password:
+             return Response({"error": "Unauthorized. Key does not match env password."}, status=401)
+        
+        username = os.environ.get('DJANGO_SUPERUSER_USERNAME', 'admin')
+        email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
+        
+        if User.objects.filter(username=username).exists():
+            user = User.objects.get(username=username)
+            user.set_password(env_password)
+            user.is_staff = True
+            user.is_superuser = True
+            user.save()
+            msg = f"Superuser '{username}' already existed. Password updated to match env var."
+        else:
+            User.objects.create_superuser(username, email, env_password)
+            msg = f"Superuser '{username}' created successfully."
+            
+        return Response({"message": msg, "login_credentials": {"username": username, "password_length": len(env_password)}})
 
 class AdminDashboardStatsView(APIView):
     """
