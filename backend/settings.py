@@ -230,13 +230,16 @@ else:
     # through a custom view since Django's static() only works in DEBUG mode
 
 # CORS Configuration
-# Standard local development origins + Android emulator IP + Render/Vercel handles
+# Standard local development origins + Android emulator IP + Production URLs
 default_cors_origins = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://localhost:8000',
     'http://127.0.0.1:8000',
     'http://10.0.2.2:8000', # Android Emulator
+    # Production URLs
+    'https://fixpix-fronted.vercel.app',
+    'https://fixpix-backend.onrender.com',
 ]
 
 CORS_ALLOWED_ORIGINS = os.environ.get(
