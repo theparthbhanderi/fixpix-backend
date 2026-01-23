@@ -240,6 +240,8 @@ default_cors_origins = [
     # Production URLs
     'https://fixpix-fronted.vercel.app',
     'https://fixpix-backend.onrender.com',
+    'https://parthbuilds.dev',
+    'https://www.parthbuilds.dev',
 ]
 
 CORS_ALLOWED_ORIGINS = os.environ.get(
