@@ -13,4 +13,6 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='auth_register'),
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    # Admin API
+    path('admin/', include('api.admin_urls')),
 ]
