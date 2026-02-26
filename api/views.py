@@ -18,6 +18,100 @@ class RegisterView(generics.CreateAPIView):
     permission_classes = (AllowAny,)
     serializer_class = RegisterSerializer
 
+
+class ProfileView(generics.RetrieveUpdateAPIView):
+    """User profile endpoint — GET to retrieve, PUT/PATCH to update."""
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        images_count = ImageProject.objects.filter(user=user).count()
+        return Response({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'date_joined': user.date_joined.isoformat(),
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'images_count': images_count,
+        })
+
+    def put(self, request, *args, **kwargs):
+        user = request.user
+        data = request.data
+
+        # Handle password change
+        if 'new_password' in data:
+            old_password = data.get('old_password', '')
+            if not user.check_password(old_password):
+                return Response({'error': 'Current password is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+            new_password = data['new_password']
+            if len(new_password) < 6:
+                return Response({'error': 'Password must be at least 6 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(new_password)
+            user.save()
+            return Response({'message': 'Password changed successfully.'})
+
+        if 'username' in data:
+            new_username = data['username'].strip()
+            if new_username and new_username != user.username:
+                from django.contrib.auth.models import User as UserModel
+                if UserModel.objects.filter(username=new_username).exclude(pk=user.pk).exists():
+                    return Response({'error': 'Username already taken.'}, status=status.HTTP_400_BAD_REQUEST)
+                user.username = new_username
+
+        if 'email' in data:
+            user.email = data['email'].strip()
+
+        if 'first_name' in data:
+            user.first_name = data['first_name'].strip()
+
+        if 'last_name' in data:
+            user.last_name = data['last_name'].strip()
+
+        user.save()
+
+        # Return updated tokens so frontend stays in sync
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+        # Add custom claims to match MyTokenObtainPairSerializer
+        refresh['username'] = user.username
+        refresh['email'] = user.email
+        refresh['is_staff'] = user.is_staff
+        refresh['is_superuser'] = user.is_superuser
+
+        images_count = ImageProject.objects.filter(user=user).count()
+
+        return Response({
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'date_joined': user.date_joined.isoformat(),
+                'images_count': images_count,
+            },
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+            }
+        })
+
+    patch = put  # Support PATCH as well
+
+    def delete(self, request, *args, **kwargs):
+        """Delete user account and all associated data."""
+        user = request.user
+        # Delete all user's images
+        ImageProject.objects.filter(user=user).delete()
+        # Delete the user
+        user.delete()
+        return Response({'message': 'Account deleted successfully.'}, status=status.HTTP_200_OK)
+
 class ImageViewSet(viewsets.ModelViewSet):
     serializer_class = ImageProjectSerializer
     permission_classes = [IsAuthenticated]

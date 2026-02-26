@@ -240,6 +240,8 @@ default_cors_origins = [
     # Production URLs
     'https://fixpix-fronted.vercel.app',
     'https://fixpix-backend.onrender.com',
+    'https://www.fixpix.in',
+    'https://fixpix.in',
     'https://parthbuilds.dev',
     'https://www.parthbuilds.dev',
 ]
