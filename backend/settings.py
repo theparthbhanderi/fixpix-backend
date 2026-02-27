@@ -23,6 +23,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-dev-key-change-in-prod')
 
+# Gemini API Key for text-to-image generation
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 # Default to True for local development convenience during testing
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
