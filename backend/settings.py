@@ -30,7 +30,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 # Default to True for local development convenience during testing
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app').split(' ')
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in').split(' ')
 
 
 # Application definition
@@ -243,6 +243,7 @@ default_cors_origins = [
     # Production URLs
     'https://fixpix-fronted.vercel.app',
     'https://fixpix-backend.onrender.com',
+    'https://fixpix-backend-production.up.railway.app',
     'https://www.fixpix.in',
     'https://fixpix.in',
     'https://parthbuilds.dev',
