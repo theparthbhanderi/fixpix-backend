@@ -248,13 +248,9 @@ default_cors_origins = [
     'http://10.0.2.2:8000', # Android Emulator
     # Production URLs
     'https://fixpix-fronted.vercel.app',
-    'https://fixpix-backend.onrender.com',
     'https://fixpix-backend-production.up.railway.app',
-    'https://fixpix-backend-production-b99b.up.railway.app',
     'https://www.fixpix.in',
     'https://fixpix.in',
-    'https://parthbuilds.dev',
-    'https://www.parthbuilds.dev',
 ]
 
 env_cors = os.environ.get('CORS_ALLOWED_ORIGINS', ' '.join(default_cors_origins))
@@ -268,7 +264,7 @@ if prod_cors:
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 
 # CSRF Configuration
-env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://fixpix-fronted.vercel.app,https://fixpix-backend-production.up.railway.app,https://fixpix-backend-production-b99b.up.railway.app,https://www.fixpix.in,https://fixpix.in,https://parthbuilds.dev')
+env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://fixpix-fronted.vercel.app,https://fixpix-backend-production.up.railway.app,https://www.fixpix.in,https://fixpix.in')
 CSRF_TRUSTED_ORIGINS = re.split(r'[\s,]+', env_csrf)
 
 # Allow Railway internal networking
