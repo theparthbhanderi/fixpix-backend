@@ -26,14 +26,20 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-dev-key-chan
 # Gemini API Key for text-to-image generation
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-# Default to True for local development convenience during testing
+# Default to False for production
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in').split(' ')
+import re
 
+# Parse ALLOWED_HOSTS from env (handles both space and comma separated)
+env_hosts = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in')
+ALLOWED_HOSTS = re.split(r'[\s,]+', env_hosts)
 
-# Application definition
+# Allow Railway internal networking
+if os.environ.get('RAILWAY_STATIC_URL'):
+    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_STATIC_URL'))
+if os.environ.get('RAILWAY_PUBLIC_DOMAIN'):
+    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_PUBLIC_DOMAIN'))
 
 
 INSTALLED_APPS = [
@@ -250,33 +256,23 @@ default_cors_origins = [
     'https://www.parthbuilds.dev',
 ]
 
-CORS_ALLOWED_ORIGINS = os.environ.get(
-    'CORS_ALLOWED_ORIGINS', 
-    ' '.join(default_cors_origins)
-).split(' ')
+env_cors = os.environ.get('CORS_ALLOWED_ORIGINS', ' '.join(default_cors_origins))
+CORS_ALLOWED_ORIGINS = re.split(r'[\s,]+', env_cors)
 
 # Add production URL if defined in environment
 prod_cors = os.environ.get('PRODUCTION_URL')
 if prod_cors:
     CORS_ALLOWED_ORIGINS.append(prod_cors)
 
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 
 # CSRF Configuration
-CSRF_TRUSTED_ORIGINS = [
-    'https://fixpix-fronted.vercel.app',
-    'https://fixpix-backend-production.up.railway.app',
-    'https://www.fixpix.in',
-    'https://fixpix.in',
-    'https://parthbuilds.dev',
-]
+env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://fixpix-fronted.vercel.app,https://fixpix-backend-production.up.railway.app,https://www.fixpix.in,https://fixpix.in,https://parthbuilds.dev')
+CSRF_TRUSTED_ORIGINS = re.split(r'[\s,]+', env_csrf)
 
 # Allow Railway internal networking
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in').split(' ')
-if os.environ.get('RAILWAY_STATIC_URL'):
-    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_STATIC_URL'))
-if os.environ.get('RAILWAY_PUBLIC_DOMAIN'):
-    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_PUBLIC_DOMAIN'))
+# ALLOWED_HOSTS = re.split(r'[\s,]+', env_hosts) # Already handled at top
+
 
 # Celery Configuration
 # In production: set CELERY_BROKER_URL to Redis/RabbitMQ
