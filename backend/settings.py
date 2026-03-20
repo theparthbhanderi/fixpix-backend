@@ -250,6 +250,7 @@ default_cors_origins = [
     'https://fixpix-fronted.vercel.app',
     'https://fixpix-backend.onrender.com',
     'https://fixpix-backend-production.up.railway.app',
+    'https://fixpix-backend-production-b99b.up.railway.app',
     'https://www.fixpix.in',
     'https://fixpix.in',
     'https://parthbuilds.dev',
@@ -267,7 +268,7 @@ if prod_cors:
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 
 # CSRF Configuration
-env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://fixpix-fronted.vercel.app,https://fixpix-backend-production.up.railway.app,https://www.fixpix.in,https://fixpix.in,https://parthbuilds.dev')
+env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://fixpix-fronted.vercel.app,https://fixpix-backend-production.up.railway.app,https://fixpix-backend-production-b99b.up.railway.app,https://www.fixpix.in,https://fixpix.in,https://parthbuilds.dev')
 CSRF_TRUSTED_ORIGINS = re.split(r'[\s,]+', env_csrf)
 
 # Allow Railway internal networking
