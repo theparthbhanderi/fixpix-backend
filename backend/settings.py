@@ -28,7 +28,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # Default to True for local development convenience during testing
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in').split(' ')
 
@@ -270,6 +270,13 @@ CSRF_TRUSTED_ORIGINS = [
     'https://fixpix.in',
     'https://parthbuilds.dev',
 ]
+
+# Allow Railway internal networking
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in').split(' ')
+if os.environ.get('RAILWAY_STATIC_URL'):
+    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_STATIC_URL'))
+if os.environ.get('RAILWAY_PUBLIC_DOMAIN'):
+    ALLOWED_HOSTS.append(os.environ.get('RAILWAY_PUBLIC_DOMAIN'))
 
 # Celery Configuration
 # In production: set CELERY_BROKER_URL to Redis/RabbitMQ
