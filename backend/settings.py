@@ -32,8 +32,8 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 import re
 
 # Parse ALLOWED_HOSTS from env (handles both space and comma separated)
-env_hosts = os.environ.get('ALLOWED_HOSTS', 'localhost 127.0.0.1 10.231.42.171 .onrender.com .vercel.app .railway.app fixpix.in')
-ALLOWED_HOSTS = re.split(r'[\s,]+', env_hosts)
+env_hosts = os.environ.get('ALLOWED_HOSTS', '*')
+ALLOWED_HOSTS = ['*'] # Temporarily allow all for debugging connection issues
 
 # Allow Railway internal networking
 if os.environ.get('RAILWAY_STATIC_URL'):
