@@ -262,6 +262,15 @@ if prod_cors:
 
 CORS_ALLOW_ALL_ORIGINS = False
 
+# CSRF Configuration
+CSRF_TRUSTED_ORIGINS = [
+    'https://fixpix-fronted.vercel.app',
+    'https://fixpix-backend-production.up.railway.app',
+    'https://www.fixpix.in',
+    'https://fixpix.in',
+    'https://parthbuilds.dev',
+]
+
 # Celery Configuration
 # In production: set CELERY_BROKER_URL to Redis/RabbitMQ
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', '')

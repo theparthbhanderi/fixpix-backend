@@ -47,4 +47,4 @@ RUN python manage.py migrate --noinput
 EXPOSE 8000
 
 # Run with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "backend.wsgi:application"]
+CMD gunicorn --bind 0.0.0.0:${PORT:-8000} --workers 3 backend.wsgi:application
