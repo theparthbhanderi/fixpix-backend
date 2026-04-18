@@ -23,18 +23,16 @@ class TieredUserRateThrottle(UserRateThrottle):
         'enterprise': '500/minute',
     }
     
+    def get_tier(self):
+        """Helper to get user tier safely."""
+        from subscriptions.utils import get_user_plan
+        return get_user_plan(self.request.user)
+    
     def get_rate(self):
         """Override to return tier-based rate."""
         if self.request.user.is_authenticated:
-            # Try to get user's plan from profile
-            try:
-                plan = getattr(self.request.user, 'profile', None)
-                if plan:
-                    tier = getattr(plan, 'plan', 'free')
-                    return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
-            except Exception:
-                pass
-        
+            tier = self.get_tier()
+            return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
         return self.TIER_RATES['free']
     
     def allow_request(self, request, view):
@@ -58,15 +56,14 @@ class ProcessingRateThrottle(UserRateThrottle):
         'enterprise': '100/minute',
     }
     
+    def get_tier(self):
+        from subscriptions.utils import get_user_plan
+        return get_user_plan(self.request.user)
+
     def get_rate(self):
         if self.request.user.is_authenticated:
-            try:
-                plan = getattr(self.request.user, 'profile', None)
-                if plan:
-                    tier = getattr(plan, 'plan', 'free')
-                    return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
-            except Exception:
-                pass
+            tier = self.get_tier()
+            return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
         return self.TIER_RATES['free']
     
     def allow_request(self, request, view):
@@ -87,15 +84,14 @@ class UploadRateThrottle(UserRateThrottle):
         'enterprise': '200/minute',
     }
     
+    def get_tier(self):
+        from subscriptions.utils import get_user_plan
+        return get_user_plan(self.request.user)
+
     def get_rate(self):
         if self.request.user.is_authenticated:
-            try:
-                plan = getattr(self.request.user, 'profile', None)
-                if plan:
-                    tier = getattr(plan, 'plan', 'free')
-                    return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
-            except Exception:
-                pass
+            tier = self.get_tier()
+            return self.TIER_RATES.get(tier, self.TIER_RATES['free'])
         return self.TIER_RATES['free']
     
     def allow_request(self, request, view):

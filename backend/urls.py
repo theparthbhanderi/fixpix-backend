@@ -14,6 +14,7 @@ urlpatterns = [
     path('health/', health_check),
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),
+    path('api/subscriptions/', include('subscriptions.urls')),
 ]
 
 # Serve media files in all environments (including production)

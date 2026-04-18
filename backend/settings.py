@@ -12,6 +12,11 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+
+# Load .env explicitly relative to settings.py's parent (the 'backend' folder's parent = django root)
+_DJANGO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(dotenv_path=_DJANGO_ROOT / '.env', override=True)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +30,10 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-dev-key-chan
 
 # Gemini API Key for text-to-image generation
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+
+# Razorpay Subscription Settings
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_placeholder')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'placeholder_secret')
 
 # Default to False for production
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
@@ -53,6 +62,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework_simplejwt',
     'api',
+    'subscriptions',
 ]
 
 MIDDLEWARE = [
@@ -63,6 +73,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'api.admin_middleware.AdminJWTMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -80,8 +91,8 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.ScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '20/minute',      # Anonymous users: 20 requests/minute
-        'user': '100/minute',     # Authenticated users: 100 requests/minute
+        'anon': '200/minute',     # Anonymous users: 200 requests/minute (for rapid suggestions)
+        'user': '1000/minute',    # Authenticated users: 1000 requests/minute
         'ai_generation': '5/minute', # Strict limit for AI generation
     },
     
@@ -243,8 +254,14 @@ else:
 default_cors_origins = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
     'http://localhost:8000',
     'http://127.0.0.1:8000',
+    'http://localhost',
+    'http://127.0.0.1',
     'http://10.0.2.2:8000', # Android Emulator
     # Production URLs
     'https://fixpix-fronted.vercel.app',
@@ -283,4 +300,9 @@ CELERY_TIMEZONE = 'UTC'
 # Local Development: Run tasks synchronously (no Redis needed)
 if DEBUG or not CELERY_BROKER_URL:
     CELERY_TASK_ALWAYS_EAGER = True
-    CELERY_TASK_EAGER_PROPAGATES = True
+# Stability AI Configuration
+STABILITY_API_KEYS = [k.strip() for k in os.environ.get('STABILITY_API_KEYS', '').split(',') if k.strip()]
+
+# Photoroom Configuration
+PHOTOROOM_API_KEY = os.environ.get('PHOTOROOM_API_KEY', '')
+PHOTOROOM_SANDBOX = os.environ.get('PHOTOROOM_SANDBOX', 'False') == 'True'

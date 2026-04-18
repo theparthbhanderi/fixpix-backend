@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import ImageProject
+from .models import ImageProject, EditHistory, ChatHistory, WorkflowHistory, ContactMessage
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
@@ -71,3 +71,24 @@ class ImageProjectSerializer(serializers.ModelSerializer):
         # Additional custom validation if needed
         return value
 
+class EditHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EditHistory
+        fields = '__all__'
+
+class ChatHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChatHistory
+        fields = '__all__'
+
+class WorkflowHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WorkflowHistory
+        fields = '__all__'
+
+
+class ContactMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactMessage
+        fields = ('id', 'name', 'email', 'category', 'message', 'created_at', 'status')
+        read_only_fields = ('id', 'created_at', 'status')

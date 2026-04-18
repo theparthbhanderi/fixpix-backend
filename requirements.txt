@@ -14,5 +14,21 @@ django-storages
 cloudinary
 django-cloudinary-storage
 
+google-auth
 google-genai
+requests
+beautifulsoup4
+pytesseract
+python-dotenv
 
+# AI Image Processing (GFPGAN & LaMa)
+torch>=1.7.0
+torchvision
+gfpgan
+basicsr
+facexlib
+omegaconf
+einops
+scikit-image
+simple-lama-inpainting
+razorpay

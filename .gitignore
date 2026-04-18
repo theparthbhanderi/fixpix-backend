@@ -21,3 +21,11 @@ __pycache__/
 .env
 media/
 db.sqlite3
+*.pid
+
+# Local model artifacts
+models/
+gfpgan/weights/
+gfpgan_data/weights/
+*.pt
+*.pth

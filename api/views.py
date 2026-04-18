@@ -1,14 +1,58 @@
 from rest_framework import viewsets, status, generics
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.core.files.base import ContentFile
 import time
 import os
 import base64
-from .models import ImageProject
-from .serializers import ImageProjectSerializer, RegisterSerializer, UserSerializer, MyTokenObtainPairSerializer
+from .models import ImageProject, ContactMessage
+from .services.link_service import extract_article_content
+from .services.search_service import multi_source_search
+from .services.trends_service import get_live_trends
+from .services import factcheck_service
+from .services.cloudflare_image import generate_image
+from .serializers import ImageProjectSerializer, RegisterSerializer, UserSerializer, MyTokenObtainPairSerializer, ContactMessageSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+import json
+from subscriptions.utils import check_and_log_usage
+from rest_framework.views import APIView
+from .google_auth import verify_google_oauth2_token, get_or_create_user_from_google, get_tokens_for_user
+
+class GoogleLoginView(APIView):
+    permission_classes = (AllowAny,)
+    
+    def post(self, request):
+        credential = request.data.get('credential')
+        if not credential:
+            return Response({'error': 'Missing Google credential'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            idinfo = verify_google_oauth2_token(credential)
+            user = get_or_create_user_from_google(idinfo)
+            tokens = get_tokens_for_user(user)
+            
+            return Response({
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                },
+                'tokens': tokens
+            })
+        except ValueError as e:
+            print(f"Google Login ValueError: {str(e)}")
+            return Response({'error': f"Token Verification Failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': f"Internal Server Error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
@@ -29,6 +73,15 @@ class ProfileView(generics.RetrieveUpdateAPIView):
     def get(self, request, *args, **kwargs):
         user = request.user
         images_count = ImageProject.objects.filter(user=user).count()
+        avatar_url = None
+        if hasattr(user, 'profile') and user.profile.avatar:
+            avatar_url = request.build_absolute_uri(user.profile.avatar.url)
+
+        # ─── SaaS Subscription Sync ─────────────────────────────────
+        from subscriptions.utils import get_user_plan, get_usage_stats
+        plan_name = get_user_plan(user)
+        usage_stats = get_usage_stats(user)
+
         return Response({
             'id': user.id,
             'username': user.username,
@@ -37,6 +90,14 @@ class ProfileView(generics.RetrieveUpdateAPIView):
             'first_name': user.first_name,
             'last_name': user.last_name,
             'images_count': images_count,
+            'avatar_url': avatar_url,
+            # SaaS Extensions: Proxy metadata for AuthContext SSOT
+            'plan': plan_name,
+            'usage': usage_stats,
+            'user_metadata': {
+                'fixpix_plan': plan_name,
+                'fixpix_plan_status': 'active'
+            }
         })
 
     def put(self, request, *args, **kwargs):
@@ -74,6 +135,14 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
         user.save()
 
+        # Handle Avatar
+        if 'avatar' in request.FILES:
+            if not hasattr(user, 'profile'):
+                from .models import UserProfile
+                UserProfile.objects.create(user=user)
+            user.profile.avatar = request.FILES['avatar']
+            user.profile.save()
+
         # Return updated tokens so frontend stays in sync
         from rest_framework_simplejwt.tokens import RefreshToken
         refresh = RefreshToken.for_user(user)
@@ -84,6 +153,9 @@ class ProfileView(generics.RetrieveUpdateAPIView):
         refresh['is_superuser'] = user.is_superuser
 
         images_count = ImageProject.objects.filter(user=user).count()
+        avatar_url = None
+        if hasattr(user, 'profile') and user.profile.avatar:
+            avatar_url = request.build_absolute_uri(user.profile.avatar.url)
 
         return Response({
             'user': {
@@ -94,6 +166,7 @@ class ProfileView(generics.RetrieveUpdateAPIView):
                 'last_name': user.last_name,
                 'date_joined': user.date_joined.isoformat(),
                 'images_count': images_count,
+                'avatar_url': avatar_url,
             },
             'tokens': {
                 'access': str(refresh.access_token),
@@ -122,6 +195,127 @@ class ImageViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def detect_faces(self, request):
+        """
+        Detect faces in the provided image and return their coordinates.
+        Expects a 'file' or 'image' in multipart/form-data.
+        """
+        image_file = request.FILES.get('file') or request.FILES.get('image')
+        if not image_file:
+            return Response({'error': 'No image file provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            from .ai_engine import AIEngine
+            result = AIEngine.detect_faces(image_file)
+            
+            return Response({
+                'status': 'success',
+                'faces': result['faces'],
+                'imageSize': result['imageSize']
+            })
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def restore_face(self, request):
+        """
+        Synchronous face restoration for the live editor tool.
+        Expects a 'file' in multipart/form-data.
+        Returns: { 'restored_image': 'base64_data' }
+        """
+        image_file = request.FILES.get('file')
+        if not image_file:
+            return Response({'error': 'No image file provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check Usage Limit
+        usage = check_and_log_usage(request.user, "photo_restoration")
+        if not usage["allowed"]:
+            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            
+        fidelity = float(request.data.get('fidelity', 0.5))
+        preserve_skin_tone = request.data.get('preserve_skin_tone', 'false').lower() == 'true'
+        
+        try:
+            from .ai_engine import AIEngine
+            from subscriptions.utils import get_user_plan
+            plan_name = get_user_plan(request.user)
+            
+            restored_img = AIEngine.restore_faces(image_file, return_path=False, fidelity=fidelity, preserve_skin_tone=preserve_skin_tone, plan_name=plan_name)
+            
+            # Encode to jpeg base64
+            import cv2
+            import base64
+            # If watermark was applied, it's already in restored_img
+            # But wait, restore_faces doesn't call _save_result when return_path=False
+            _, buffer = cv2.imencode('.jpg', restored_img)
+            base64_img = base64.b64encode(buffer).decode('utf-8')
+            
+            return Response({
+                'status': 'success',
+                'restored_image': base64_img
+            })
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def inpaint(self, request):
+        """
+        Synchronous object removal (inpainting).
+        Expects 'image' and 'mask' in multipart/form-data.
+        Returns: { 'inpainted_image': 'base64_data' }
+        """
+        image_file = request.FILES.get('image')
+        mask_file = request.FILES.get('mask')
+        prompt = request.data.get('prompt', 'remove the masked object completely and seamlessly fill the background with high quality, matching textures')
+
+        if not image_file or not mask_file:
+            return Response({'error': 'Image and Mask are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check Usage Limit
+        usage = check_and_log_usage(request.user, "background_remove")
+        if not usage["allowed"]:
+            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        try:
+            from .ai_engine import AIEngine
+            import cv2
+            import base64
+            import numpy as np
+
+            # Read bytes
+            image_bytes = image_file.read()
+            mask_bytes = mask_file.read()
+
+            # Process via AIEngine (which calls Stability AI)
+            # We want the result as numpy or bytes
+            # For efficiency in this sync endpoint, let's call stability directly or via AIEngine with return_path=False
+            
+            # Prepare for AIEngine
+            nparr_img = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr_img, cv2.IMREAD_COLOR)
+
+            nparr_mask = np.frombuffer(mask_bytes, np.uint8)
+            mask = cv2.imdecode(nparr_mask, cv2.IMREAD_UNCHANGED)
+
+            result_img = AIEngine.inpaint_object(img, mask, return_path=False, prompt=prompt)
+
+            # Encode result
+            success, buffer = cv2.imencode('.jpg', result_img)
+            if not success:
+                 return Response({'error': 'Failed to encode inpaint result'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            base64_res = base64.b64encode(buffer).decode('utf-8')
+
+            return Response({
+                'status': 'success',
+                'inpainted_image': base64_res
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=True, methods=['post'])
     def process_image(self, request, pk=None):
         project = self.get_object()
@@ -136,6 +330,19 @@ class ImageViewSet(viewsets.ModelViewSet):
              if algo_type == 'restore': settings_data['removeScratches'] = True
              if algo_type == 'colorize': settings_data['colorize'] = True
              if algo_type == 'upscale': settings_data['upscaleX'] = 2
+
+        # Check Usage Limit based on active feature
+        feature_key = "photo_restoration" # Default
+        if settings_data.get('colorize'):
+            feature_key = "colorization"
+        elif settings_data.get('upscaleX'):
+            feature_key = "upscaling"
+        elif request.data.get('mask') or settings_data.get('removeObject'):
+            feature_key = "background_remove"
+        
+        usage = check_and_log_usage(request.user, feature_key)
+        if not usage["allowed"]:
+            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         # Basic Validation (Security)
         # Cap upscale to 4x to prevent DOS
@@ -191,7 +398,7 @@ class ImageViewSet(viewsets.ModelViewSet):
             'message': 'Image processing started in background.'
         }, status=status.HTTP_202_ACCEPTED)
 
-    @action(detail=True, methods=['get'], permission_classes=[AllowAny])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def download(self, request, pk=None):
         """
         Serve the processed image as a downloadable attachment.
@@ -206,8 +413,10 @@ class ImageViewSet(viewsets.ModelViewSet):
         import io
         
         try:
-            # Bypass get_object() which filters by user (since we are AllowAny now)
+            # Enforce ownership check (Security Audit Fix)
             project = ImageProject.objects.get(pk=pk)
+            if project.user != request.user:
+                return Response({'error': 'Unauthorized access to this asset'}, status=status.HTTP_403_FORBIDDEN)
         except ImageProject.DoesNotExist:
             return Response({'error': 'Project not found'}, status=status.HTTP_404_NOT_FOUND)
         
@@ -244,6 +453,21 @@ class ImageViewSet(viewsets.ModelViewSet):
         
         try:
             with Image.open(file_path) as img:
+                # Apply Watermark for Free Tier if not already present
+                # (Or always apply if free, to be safe for legacy images)
+                from subscriptions.utils import get_user_plan
+                plan_name = get_user_plan(project.user)
+                if plan_name == 'free':
+                    import numpy as np
+                    import cv2
+                    from .utils.watermark import apply_watermark
+                    
+                    # Convert PIL to CV2
+                    img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                    img_wm = apply_watermark(img_cv)
+                    # Convert back to PIL
+                    img = Image.fromarray(cv2.cvtColor(img_wm, cv2.COLOR_BGR2RGB))
+
                 # Convert RGBA to RGB if saving as JPEG
                 if target_format == 'jpg' and img.mode == 'RGBA':
                     img = img.convert('RGB')
@@ -379,4 +603,68 @@ class ImageViewSet(viewsets.ModelViewSet):
         
         limits = GenerationLimits(request.user)
         return Response(limits.get_status())
+
+
+@csrf_exempt
+def text_to_image(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            prompt = data.get("prompt")
+
+            if not prompt:
+                return JsonResponse({"error": "Prompt required"}, status=400)
+
+            image = generate_image(prompt)
+
+            if not image:
+                return JsonResponse({"error": "Generation failed"}, status=500)
+
+            return HttpResponse(image, content_type="image/jpeg")
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+# --- Supabase Migration ViewSets ---
+
+from .models import EditHistory, ChatHistory, WorkflowHistory
+from .serializers import EditHistorySerializer, ChatHistorySerializer, WorkflowHistorySerializer
+
+class EditHistoryViewSet(viewsets.ModelViewSet):
+    serializer_class = EditHistorySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return EditHistory.objects.filter(user=self.request.user).order_by('-created_at')
+        
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+class ChatHistoryViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatHistorySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return ChatHistory.objects.filter(user=self.request.user).order_by('timestamp')
+        
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+class WorkflowHistoryViewSet(viewsets.ModelViewSet):
+    serializer_class = WorkflowHistorySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return WorkflowHistory.objects.filter(user=self.request.user).order_by('-created_at')
+        
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class ContactSubmissionView(generics.CreateAPIView):
+    queryset = ContactMessage.objects.all()
+    serializer_class = ContactMessageSerializer
+    permission_classes = [AllowAny]
+
 
