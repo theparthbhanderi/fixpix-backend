@@ -17,7 +17,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
-from subscriptions.utils import check_and_log_usage
+from subscriptions.plan_enforcement import check_user_plan_for_request, record_successful_usage
 from rest_framework.views import APIView
 from .google_auth import verify_google_oauth2_token, get_or_create_user_from_google, get_tokens_for_user
 
@@ -228,18 +228,16 @@ class ImageViewSet(viewsets.ModelViewSet):
         if not image_file:
             return Response({'error': 'No image file provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check Usage Limit
-        usage = check_and_log_usage(request.user, "photo_restoration")
-        if not usage["allowed"]:
-            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        plan_check = check_user_plan_for_request(request, feature_key="edit", consume=False)
+        if not plan_check.get("allowed"):
+            return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
             
         fidelity = float(request.data.get('fidelity', 0.5))
         preserve_skin_tone = request.data.get('preserve_skin_tone', 'false').lower() == 'true'
         
         try:
             from .ai_engine import AIEngine
-            from subscriptions.utils import get_user_plan
-            plan_name = get_user_plan(request.user)
+            plan_name = str(plan_check.get("plan", "FREE")).lower()
             
             restored_img = AIEngine.restore_faces(image_file, return_path=False, fidelity=fidelity, preserve_skin_tone=preserve_skin_tone, plan_name=plan_name)
             
@@ -251,10 +249,14 @@ class ImageViewSet(viewsets.ModelViewSet):
             _, buffer = cv2.imencode('.jpg', restored_img)
             base64_img = base64.b64encode(buffer).decode('utf-8')
             
-            return Response({
+            response_payload = {
                 'status': 'success',
-                'restored_image': base64_img
-            })
+                'restored_image': base64_img,
+                'plan': plan_check.get("plan"),
+                'priority': plan_check.get("priority", "low")
+            }
+            record_successful_usage(request, feature_key="edit")
+            return Response(response_payload)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -272,10 +274,9 @@ class ImageViewSet(viewsets.ModelViewSet):
         if not image_file or not mask_file:
             return Response({'error': 'Image and Mask are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check Usage Limit
-        usage = check_and_log_usage(request.user, "background_remove")
-        if not usage["allowed"]:
-            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        plan_check = check_user_plan_for_request(request, feature_key="background_remove", consume=False)
+        if not plan_check.get("allowed"):
+            return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
         try:
             from .ai_engine import AIEngine
@@ -307,10 +308,14 @@ class ImageViewSet(viewsets.ModelViewSet):
             
             base64_res = base64.b64encode(buffer).decode('utf-8')
 
-            return Response({
+            response_payload = {
                 'status': 'success',
-                'inpainted_image': base64_res
-            })
+                'inpainted_image': base64_res,
+                'plan': plan_check.get("plan"),
+                'priority': plan_check.get("priority", "low")
+            }
+            record_successful_usage(request, feature_key="background_remove")
+            return Response(response_payload)
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -340,9 +345,20 @@ class ImageViewSet(viewsets.ModelViewSet):
         elif request.data.get('mask') or settings_data.get('removeObject'):
             feature_key = "background_remove"
         
-        usage = check_and_log_usage(request.user, feature_key)
-        if not usage["allowed"]:
-            return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        batch_count = 1
+        try:
+            batch_count = int(request.data.get('batchCount', 1))
+        except Exception:
+            batch_count = 1
+
+        plan_check = check_user_plan_for_request(
+            request,
+            feature_key=feature_key if feature_key in ("background_remove", "upscaling") else None,
+            batch_count=batch_count,
+            consume=False,
+        )
+        if not plan_check.get("allowed"):
+            return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
         # Basic Validation (Security)
         # Cap upscale to 4x to prevent DOS
@@ -381,7 +397,13 @@ class ImageViewSet(viewsets.ModelViewSet):
         # Dispatch Async Task
         try:
             from .tasks import process_image_async
-            task = process_image_async.delay(project.id, settings_data, mask_temp_path)
+            if hasattr(process_image_async, 'apply_async'):
+                task = process_image_async.apply_async(
+                    args=(project.id, settings_data, mask_temp_path),
+                    queue=plan_check.get('queue', 'free_low')
+                )
+            else:
+                task = process_image_async.delay(project.id, settings_data, mask_temp_path)
         except Exception as e:
             # Fallback if Broker is down
             print(f"Celery Error: {e}")
@@ -392,10 +414,18 @@ class ImageViewSet(viewsets.ModelViewSet):
                 'detail': str(e)
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
+        record_successful_usage(
+            request,
+            feature_key=feature_key if feature_key in ("background_remove", "upscaling") else "edit",
+            notes={"queue": plan_check.get('queue', 'free_low')},
+        )
         return Response({
             'status': 'accepted', 
             'task_id': task.id,
-            'message': 'Image processing started in background.'
+            'message': 'Image processing started in background.',
+            'plan': plan_check.get('plan'),
+            'priority': plan_check.get('priority', 'low'),
+            'queue': plan_check.get('queue', 'free_low')
         }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
@@ -526,16 +556,12 @@ class ImageViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 seed = None
         
-        # Check rate limits
+        plan_check = check_user_plan_for_request(request, feature_key="text_to_image", consume=False)
+        if not plan_check.get("allowed"):
+            return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
+
+        # Keep existing prompt-quality validation while plan limits are enforced separately.
         limits = GenerationLimits(request.user)
-        limit_check = limits.can_generate()
-        
-        if not limit_check['allowed']:
-            return Response({
-                'error': limit_check['reason'],
-                'remaining': limit_check['remaining'],
-                'daily_limit': limit_check['daily_limit'],
-            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
         
         # Validate prompt
         prompt_check = limits.validate_prompt(prompt)
@@ -568,12 +594,18 @@ class ImageViewSet(viewsets.ModelViewSet):
         # Dispatch async generation task
         try:
             from .tasks import generate_image_async
-            task = generate_image_async.delay(
-                str(project.id),
-                sanitized_prompt,
-                style,
-                seed
-            )
+            if hasattr(generate_image_async, 'apply_async'):
+                task = generate_image_async.apply_async(
+                    args=(str(project.id), sanitized_prompt, style, seed),
+                    queue=plan_check.get('queue', 'free_low')
+                )
+            else:
+                task = generate_image_async.delay(
+                    str(project.id),
+                    sanitized_prompt,
+                    style,
+                    seed
+                )
         except Exception as e:
             print(f"Celery Error (generation): {e}")
             limits.decrement_concurrent()
@@ -584,12 +616,19 @@ class ImageViewSet(viewsets.ModelViewSet):
                 'detail': str(e)
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         
+        record_successful_usage(
+            request,
+            feature_key="text_to_image",
+            notes={"queue": plan_check.get('queue', 'free_low')},
+        )
         return Response({
             'status': 'accepted',
             'project_id': str(project.id),
             'task_id': task.id,
             'message': 'Image generation started. This may take 2-3 minutes.',
-            'remaining': limit_check['remaining'] - 1,
+            'plan': plan_check.get('plan'),
+            'priority': plan_check.get('priority', 'low'),
+            'queue': plan_check.get('queue', 'free_low')
         }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=False, methods=['get'])
@@ -600,9 +639,18 @@ class ImageViewSet(viewsets.ModelViewSet):
         Returns current usage, limits, and tier info.
         """
         from .generation_limits import GenerationLimits
+        from subscriptions.plan_enforcement import get_or_create_user_plan
         
         limits = GenerationLimits(request.user)
-        return Response(limits.get_status())
+        user_plan = get_or_create_user_plan(request.user)
+        payload = limits.get_status()
+        payload.update({
+            'plan': user_plan.plan,
+            'features': user_plan.features,
+            'daily_usage': user_plan.daily_usage,
+            'last_reset_date': user_plan.last_reset_date,
+        })
+        return Response(payload)
 
 
 @csrf_exempt

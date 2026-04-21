@@ -28,6 +28,15 @@ from .services.pixian_service import PixianService
 
 
 class AIEngine:
+
+    @staticmethod
+    def _normalize_plan_name(plan_name):
+        return str(plan_name or "").strip().lower()
+
+    @staticmethod
+    def _is_paid_plan(plan_name):
+        normalized = AIEngine._normalize_plan_name(plan_name)
+        return normalized in {"pro", "elite", "pro_yearly", "elite_yearly"}
     
     # ============== HELPER METHODS ==============
     
@@ -90,7 +99,8 @@ class AIEngine:
         """
         Helper to save processed image using Django Storage API.
         """
-        if image is not None and plan_name == 'free':
+        normalized_plan = str(plan_name).lower() if plan_name is not None else ''
+        if image is not None and normalized_plan == 'free':
             try:
                 # Apply watermark for free users
                 image = apply_watermark(image)
@@ -207,7 +217,7 @@ class AIEngine:
         img = AIEngine._read_image(image_input)
         
         # --- PREMIUM: Stability AI Restoration ---
-        if getattr(settings, 'STABILITY_API_KEYS', []):
+        if AIEngine._is_paid_plan(plan_name) and getattr(settings, 'STABILITY_API_KEYS', []):
             try:
                 from .services.stability_service import StabilityService
                 stability = StabilityService()
@@ -316,40 +326,41 @@ class AIEngine:
         """
         img_array = AIEngine._read_image(image_input)
         
-        # 1. PREMIUM: Photoroom AI (Highest Accuracy)
-        try:
-            # Encode to bytes for API
-            _, buffer = cv2.imencode('.jpg', img_array)
-            img_bytes = buffer.tobytes()
-            
-            photoroom = PhotoroomService()
-            result_bytes = photoroom.remove_background(img_bytes)
-            
-            if result_bytes:
-                logger.info("AIEngine: Successfully removed background via Photoroom AI")
-                nparr = np.frombuffer(result_bytes, np.uint8)
-                img_nobg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                if img_nobg is not None:
-                    return AIEngine._save_result(img_nobg, ref_path, 'nobg_photoroom', return_path, plan_name=plan_name)
-        except Exception as e:
-            logger.warn(f"AIEngine: Photoroom API failed, falling back: {e}")
+        if AIEngine._is_paid_plan(plan_name):
+            # 1. PREMIUM: Photoroom AI (Highest Accuracy)
+            try:
+                # Encode to bytes for API
+                _, buffer = cv2.imencode('.jpg', img_array)
+                img_bytes = buffer.tobytes()
+                
+                photoroom = PhotoroomService()
+                result_bytes = photoroom.remove_background(img_bytes)
+                
+                if result_bytes:
+                    logger.info("AIEngine: Successfully removed background via Photoroom AI")
+                    nparr = np.frombuffer(result_bytes, np.uint8)
+                    img_nobg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                    if img_nobg is not None:
+                        return AIEngine._save_result(img_nobg, ref_path, 'nobg_photoroom', return_path, plan_name=plan_name)
+            except Exception as e:
+                logger.warn(f"AIEngine: Photoroom API failed, falling back: {e}")
 
-        # 2. PREMIUM FALLBACK: Pixian AI (High Fidelity)
-        try:
-            _, buffer = cv2.imencode('.jpg', img_array)
-            img_bytes = buffer.tobytes()
-            
-            pixian = PixianService()
-            result_bytes = pixian.remove_background(img_bytes)
-            
-            if result_bytes:
-                logger.info("AIEngine: Successfully removed background via Pixian AI fallback")
-                nparr = np.frombuffer(result_bytes, np.uint8)
-                img_nobg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                if img_nobg is not None:
-                    return AIEngine._save_result(img_nobg, ref_path, 'nobg_pixian', return_path, plan_name=plan_name)
-        except Exception as e:
-            logger.warn(f"AIEngine: Pixian API failed: {e}")
+            # 2. PREMIUM FALLBACK: Pixian AI (High Fidelity)
+            try:
+                _, buffer = cv2.imencode('.jpg', img_array)
+                img_bytes = buffer.tobytes()
+                
+                pixian = PixianService()
+                result_bytes = pixian.remove_background(img_bytes)
+                
+                if result_bytes:
+                    logger.info("AIEngine: Successfully removed background via Pixian AI fallback")
+                    nparr = np.frombuffer(result_bytes, np.uint8)
+                    img_nobg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                    if img_nobg is not None:
+                        return AIEngine._save_result(img_nobg, ref_path, 'nobg_pixian', return_path, plan_name=plan_name)
+            except Exception as e:
+                logger.warn(f"AIEngine: Pixian API failed: {e}")
 
         # 3. LOCAL AI: rembg (Fast & Free)
         if remove is not None:
@@ -416,6 +427,25 @@ class AIEngine:
         - Subtle saturation boost
         """
         img = AIEngine._read_image(image_input)
+
+        if AIEngine._is_paid_plan(plan_name) and getattr(settings, 'STABILITY_API_KEYS', []):
+            try:
+                from .services.stability_service import StabilityService
+                stability = StabilityService()
+                _, encoded_img = cv2.imencode('.png', img)
+                img_bytes = encoded_img.tobytes()
+                enhanced_bytes = stability.edit_image(
+                    img_bytes,
+                    prompt="professional photo enhancement, natural color grading, crisp details, high dynamic range",
+                    strength=0.25,
+                )
+                if enhanced_bytes:
+                    nparr = np.frombuffer(enhanced_bytes, np.uint8)
+                    enhanced_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if enhanced_img is not None:
+                        return AIEngine._save_result(enhanced_img, ref_path, 'auto_enhanced_premium', return_path, plan_name=plan_name)
+            except Exception as e:
+                logger.error(f"AIEngine: Premium auto-enhance failed, falling back: {e}")
         
         # 1. Auto White Balance (Gray World algorithm)
         img_float = img.astype(np.float32)
@@ -603,7 +633,7 @@ class AIEngine:
         has_faces = AIEngine._detect_faces(img)
         
         # CHOICE 1: PORTRAIT/PEOPLE (GFPGAN Path)
-        if has_faces:
+        if has_faces and AIEngine._is_paid_plan(plan_name):
             logger.info(f"AIEngine: Smart Routing -> Person detected. Using GFPGAN for high-fidelity facial upscaling ({scale}x)")
             try:
                 from .gfpgan_service import GFPGANService
@@ -616,7 +646,7 @@ class AIEngine:
                 logger.error(f"AIEngine: Smart GFPGAN failed: {e}")
 
         # CHOICE 2: GENERAL/NATURE (Stability Path)
-        if getattr(settings, 'STABILITY_API_KEYS', []):
+        if AIEngine._is_paid_plan(plan_name) and getattr(settings, 'STABILITY_API_KEYS', []):
             try:
                 from .services.stability_service import StabilityService
                 stability = StabilityService()

@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .models import SubscriptionPlan, UserSubscription, UsageLog
 from .utils import get_user_plan, get_usage_stats
+from .plan_enforcement import get_or_create_user_plan
 
 def get_razorpay_client():
     """Helper to initialize Razorpay client with current settings."""
@@ -161,11 +162,16 @@ def get_subscription_status(request):
         display_name = 'Free Tier'
 
     usage_stats = get_usage_stats(request.user)
+    user_plan_state = get_or_create_user_plan(request.user)
     
     return Response({
         'plan': {
             'name': plan_name,
-            'display_name': display_name
+            'display_name': display_name,
+            'tier': user_plan_state.plan,
+            'features': user_plan_state.features,
         },
-        'usage': usage_stats
+        'usage': usage_stats,
+        'dailyUsage': user_plan_state.daily_usage,
+        'lastResetDate': user_plan_state.last_reset_date,
     })

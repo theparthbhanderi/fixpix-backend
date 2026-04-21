@@ -202,8 +202,8 @@ def process_image_async(self, image_id, settings_data, mask_path_temp=None):
         print(f"🚀 Optimized Pipeline Complete in {duration:.2f}s (Project: {image_id})")
 
         # Final Save (to Storage)
-        from subscriptions.utils import get_user_plan
-        plan_name = get_user_plan(project.user)
+        from subscriptions.plan_enforcement import get_or_create_user_plan
+        plan_name = get_or_create_user_plan(project.user).plan.lower()
         final_rel_path = AIEngine._save_result(current_img, ref_path, 'edited', return_path=True, plan_name=plan_name)
         
         # Update project record
@@ -277,6 +277,7 @@ def generate_image_async(self, project_id, prompt, style='photorealistic', seed=
     from api.models import ImageProject
     from api.deepfloyd_service import DeepFloydService
     from api.generation_limits import GenerationLimits
+    from subscriptions.plan_enforcement import get_or_create_user_plan
     import time
     
     start_time = time.time()
@@ -288,6 +289,19 @@ def generate_image_async(self, project_id, prompt, style='photorealistic', seed=
         
         print(f"DeepFloyd Task: Starting generation for project {project_id}")
         print(f"DeepFloyd Task: Prompt: '{prompt[:50]}...', Style: {style}")
+
+        user_plan = get_or_create_user_plan(project.user)
+        plan_tier = user_plan.plan
+
+        if plan_tier == 'ELITE':
+            inference_steps = 60
+            guidance_scale = 8.0
+        elif plan_tier == 'PRO':
+            inference_steps = 50
+            guidance_scale = 7.5
+        else:
+            inference_steps = 35
+            guidance_scale = 6.5
         
         # Initialize service and generate
         service = DeepFloydService()
@@ -296,8 +310,8 @@ def generate_image_async(self, project_id, prompt, style='photorealistic', seed=
             prompt=prompt,
             style=style,
             seed=seed,
-            num_inference_steps=50,
-            guidance_scale=7.5,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
         )
         
         # Check for NSFW content

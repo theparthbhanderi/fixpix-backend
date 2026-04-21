@@ -45,3 +45,44 @@ PLAN_LIMITS = {
         "image_fact_checker": -1,
     }
 }
+
+# Strict backend plan configuration for image workflows.
+# NOTE: We keep PLAN_LIMITS above for legacy feature checks used by other modules.
+PLAN_CONFIG = {
+    "FREE": {
+        "maxTasksPerDay": 5,
+        "watermark": True,
+        "backgroundRemovalLimit": 3,
+        "upscalingLimit": 1,
+        "batchProcessing": False,
+        "priorityProcessing": False,
+        "modelAccess": "basic",
+    },
+    "PRO": {
+        "maxTasksPerDay": 50,
+        "watermark": False,
+        "backgroundRemovalLimit": 50,
+        "upscalingLimit": 30,
+        "batchProcessing": True,
+        "priorityProcessing": True,
+        "modelAccess": "advanced",
+    },
+    "ELITE": {
+        "maxTasksPerDay": "unlimited",
+        "watermark": False,
+        "backgroundRemovalLimit": "unlimited",
+        "upscalingLimit": "unlimited",
+        "batchProcessing": True,
+        "priorityProcessing": True,
+        "modelAccess": "advanced",
+    },
+}
+
+# Maps subscription plan records to effective enforcement tier.
+PLAN_NAME_TO_TIER = {
+    "free": "FREE",
+    "pro": "PRO",
+    "pro_yearly": "PRO",
+    "elite": "ELITE",
+    "elite_yearly": "ELITE",
+}

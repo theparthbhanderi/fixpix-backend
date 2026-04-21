@@ -196,13 +196,16 @@ class AdminDashboardStatsView(APIView):
         prev_24h = now - timedelta(hours=48)
         last_7d = now - timedelta(days=7)
         last_30d = now - timedelta(days=30)
+        prev_30d_start = now - timedelta(days=60)
 
         # ─── CORE ANALYTICS (CURRENT VS PREVIOUS) ───
-        
+
         # 1. User Growth
         total_users = User.objects.count()
         today_users = User.objects.filter(date_joined__gte=last_24h).count()
         yest_users = User.objects.filter(date_joined__gte=prev_24h, date_joined__lt=last_24h).count()
+        users_last_30d = User.objects.filter(date_joined__gte=last_30d).count()
+        users_prev_30d = User.objects.filter(date_joined__gte=prev_30d_start, date_joined__lt=last_30d).count()
         
         # 2. Active Users (7D)
         active_7d = User.objects.filter(last_login__gte=last_7d).count()
@@ -211,6 +214,7 @@ class AdminDashboardStatsView(APIView):
         # 3. Image Processing
         total_images = ImageProject.objects.count()
         images_24h = ImageProject.objects.filter(created_at__gte=last_24h).count()
+        images_prev_24h = ImageProject.objects.filter(created_at__gte=prev_24h, created_at__lt=last_24h).count()
         completed_images = ImageProject.objects.filter(status='completed').count()
         failed_images = ImageProject.objects.filter(status='failed').count()
         
@@ -221,20 +225,168 @@ class AdminDashboardStatsView(APIView):
         # 4. API & Storage
         total_api_usage = ImageProject.objects.filter(created_at__gte=last_30d).count() # Proxy for API calls
         est_storage_gb = round(total_images * 0.002, 2) # Heuristic: 2MB per project
+        completed_recent = ImageProject.objects.filter(
+            completed_at__isnull=False,
+            created_at__gte=last_7d
+        ).values_list('created_at', 'completed_at')[:100]
+
+        latency_samples = []
+        for created_at, completed_at in completed_recent:
+            if created_at and completed_at and completed_at >= created_at:
+                latency_samples.append((completed_at - created_at).total_seconds())
+        avg_latency = round(sum(latency_samples) / len(latency_samples), 2) if latency_samples else 0
 
         # 5. Distributions
-        type_distribution = list(ImageProject.objects.values('processing_type').annotate(count=Count('processing_type')).order_by('-count')[:5])
+        type_distribution = list(
+            ImageProject.objects.values('processing_type')
+            .annotate(count=Count('processing_type'))
+            .order_by('-count')[:5]
+        )
         source_distribution = [
             {'name': 'Web App', 'value': 85},
             {'name': 'API', 'value': 15}
         ]
+        plan_distribution_raw = _get_plan_distribution()
+        plan_total = sum(p['count'] for p in plan_distribution_raw) or 1
         plan_distribution = [
-            {'name': 'Free', 'value': 70},
-            {'name': 'Pro', 'value': 25},
-            {'name': 'Elite', 'value': 5}
+            {
+                'name': p['plan'].replace('_', ' ').title(),
+                'count': p['count'],
+                'pct': round((p['count'] / plan_total) * 100, 1),
+                'growth': 0,
+            }
+            for p in plan_distribution_raw
         ]
 
+        # 6. Processing trend (last 7 days)
+        trend_totals = list(
+            ImageProject.objects.filter(created_at__gte=last_7d)
+            .annotate(day=TruncDate('created_at'))
+            .values('day')
+            .annotate(count=Count('id'))
+            .order_by('day')
+        )
+        trend_failed = list(
+            ImageProject.objects.filter(created_at__gte=last_7d, status='failed')
+            .annotate(day=TruncDate('created_at'))
+            .values('day')
+            .annotate(count=Count('id'))
+            .order_by('day')
+        )
+        totals_map = {str(t['day']): t['count'] for t in trend_totals}
+        failed_map = {str(t['day']): t['count'] for t in trend_failed}
+        processing_trend = []
+        for i in range(6, -1, -1):
+            day = (now - timedelta(days=i)).date()
+            day_key = str(day)
+            day_total = totals_map.get(day_key, 0)
+            day_failed = failed_map.get(day_key, 0)
+            processing_trend.append({
+                'date': day.strftime('%m-%d'),
+                'success': max(0, day_total - day_failed),
+                'failed': day_failed,
+            })
+
+        # 7. Recent admin/system activity for dashboard feed
+        recent_activity = list(
+            AdminActivityLog.objects.select_related('admin_user', 'target_user')[:8]
+        )
+        activity_feed = []
+        for event in recent_activity:
+            actor = event.admin_user.username if event.admin_user else 'System'
+            target = event.target_user.username if event.target_user else None
+            message = f"{actor} {event.get_action_display().lower()}"
+            if target:
+                message = f"{message} for {target}"
+            activity_feed.append({
+                'id': str(event.id),
+                'action': event.action,
+                'message': message,
+                'admin': actor,
+                'timestamp': event.timestamp.isoformat(),
+                'severity': 'high' if event.action in {'login_failed', 'ban_user'} else 'normal',
+            })
+
+        # 8. Inline insights for dashboard side panel
+        dashboard_insights = []
+        fail_rate_24h = round((ImageProject.objects.filter(created_at__gte=last_24h, status='failed').count() / images_24h) * 100, 1) if images_24h else 0
+        if fail_rate_24h > 5:
+            dashboard_insights.append({
+                'type': 'warning',
+                'priority': 'high',
+                'title': 'Failure rate is elevated',
+                'message': f'{fail_rate_24h}% of jobs failed in last 24h. Investigate queue and model health.'
+            })
+        if gpu_queue > 20:
+            dashboard_insights.append({
+                'type': 'performance',
+                'priority': 'medium',
+                'title': 'Queue backlog increasing',
+                'message': f'{gpu_queue} jobs are pending. Consider scaling workers.'
+            })
+        if users_prev_30d > 0:
+            growth_30d = round(((users_last_30d - users_prev_30d) / users_prev_30d) * 100, 1)
+            if growth_30d > 20:
+                dashboard_insights.append({
+                    'type': 'growth',
+                    'priority': 'low',
+                    'title': 'User acquisition trend positive',
+                    'message': f'Signups are up {growth_30d}% vs previous 30-day window.'
+                })
+            elif growth_30d < -20:
+                dashboard_insights.append({
+                    'type': 'warning',
+                    'priority': 'high',
+                    'title': 'Signup momentum dropped',
+                    'message': f'Signups are down {abs(growth_30d)}% vs previous 30-day window.'
+                })
+
+        # Dashboard screen expects these keys.
+        overview = {
+            'total_users': {
+                'value': total_users,
+                'change': today_users - yest_users,
+                'pct': round(((today_users - yest_users) / yest_users) * 100, 1) if yest_users > 0 else 0,
+                'sparkline': [{'value': x['success'] + x['failed']} for x in processing_trend],
+            },
+            'images_processed': {
+                'value': total_images,
+                'change_24h': images_24h - images_prev_24h,
+                'success_rate': round(success_rate, 1),
+            },
+            'active_users': {
+                'value': active_7d,
+                'today': active_today,
+            },
+            'api_usage': {
+                'last_24h': images_24h,
+                'avg_latency': avg_latency,
+            },
+        }
+
+        charts = {
+            'processing_trend': processing_trend,
+            'feature_usage': [
+                {'processing_type': d['processing_type'], 'usage': d['count']}
+                for d in type_distribution
+            ],
+            'plans': plan_distribution,
+        }
+
+        # Log dashboard view
+        admin_user = getattr(request, 'admin_user', None)
+        if admin_user:
+            request.user = admin_user
+        AdminActivityLog.log(request, 'view_dashboard')
+
         return Response({
+            # New dashboard-first shape
+            'overview': overview,
+            'charts': charts,
+            'insights': dashboard_insights,
+            'activity_feed': activity_feed,
+
+            # Existing compatibility shape
             'users': {
                 'total': total_users,
                 'active_7d': active_7d,
@@ -254,11 +406,12 @@ class AdminDashboardStatsView(APIView):
             },
             'api_usage': {
                 'total_30d': total_api_usage,
+                'avg_latency': avg_latency,
             },
             'distributions': {
                 'processing_types': type_distribution,
                 'sources': source_distribution,
-                'plans': plan_distribution,
+                'plans': [{'name': p['name'], 'value': p['count']} for p in plan_distribution],
             },
             'system': {
                 'status': 'healthy' if active_jobs < 50 else 'high_load',
@@ -445,6 +598,11 @@ class JobMonitorView(APIView):
                 'created_at': job.created_at,
                 'source': job.source,
             })
+
+        admin_user = getattr(request, 'admin_user', None)
+        if admin_user:
+            request.user = admin_user
+        AdminActivityLog.log(request, 'view_jobs', details={'status': status_filter, 'page': page})
 
         return Response({
             'jobs': job_data,
@@ -816,6 +974,11 @@ class AdminAIInsightsView(APIView):
         severity_order = {'high': 0, 'medium': 1, 'low': 2}
         insights.sort(key=lambda x: severity_order.get(x['severity'], 99))
 
+        admin_user = getattr(request, 'admin_user', None)
+        if admin_user:
+            request.user = admin_user
+        AdminActivityLog.log(request, 'other', details={'scope': 'view_insights', 'count': len(insights)})
+
         return Response({
             'insights': insights,
             'generated_at': now.isoformat(),
@@ -903,6 +1066,11 @@ class AdminSystemHealthView(APIView):
             alerts.append({'level': 'warning', 'message': f'Large queue: {pending} jobs pending'})
         if error_rate_24h > 5:
             alerts.append({'level': 'warning', 'message': f'Elevated error rate: {error_rate_24h}% in 24h'})
+
+        admin_user = getattr(request, 'admin_user', None)
+        if admin_user:
+            request.user = admin_user
+        AdminActivityLog.log(request, 'other', details={'scope': 'view_system_health', 'status': 'critical' if error_rate_1h > 20 else 'degraded' if error_rate_1h > 5 else 'healthy'})
 
         return Response({
             'status': 'critical' if error_rate_1h > 20 else 'degraded' if error_rate_1h > 5 else 'healthy',
@@ -1038,6 +1206,11 @@ class AdminUserDetailView(APIView):
         # ── Upgrade Recommendation ──
         should_upgrade = plan_name == 'free' and images_30d >= 5
         upgrade_reason = f'Processed {images_30d} images on free plan in 30 days' if should_upgrade else None
+
+        admin_user = getattr(request, 'admin_user', None)
+        if admin_user:
+            request.user = admin_user
+        AdminActivityLog.log(request, 'other', target_user=user, details={'scope': 'view_user_detail', 'user_id': user.id})
 
         return Response({
             'user': {

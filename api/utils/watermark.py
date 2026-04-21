@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def apply_watermark(image, text="FixPix AI"):
+def apply_watermark(image, text="FixPix AI", reinforce=False):
     """
     Applies a subtle watermark to the bottom-right of the image.
     Works with both BGR and BGRA images.
@@ -38,8 +38,26 @@ def apply_watermark(image, text="FixPix AI"):
     cv2.putText(overlay, text, (pos_x, pos_y), 
                 font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
-    # Blend overlay with original for transparency (70% original, 30% overlay)
-    alpha = 0.35
+    if reinforce:
+        center_text = "FixPix"
+        center_scale = max(0.4, font_scale * 0.65)
+        center_thickness = max(1, int(center_scale * 1.4))
+        center_size, _ = cv2.getTextSize(center_text, font, center_scale, center_thickness)
+        center_x = max(margin, int((w - center_size[0]) * 0.5))
+        center_y = max(text_h + margin, int(h * 0.52))
+        cv2.putText(
+            overlay,
+            center_text,
+            (center_x, center_y),
+            font,
+            center_scale,
+            (245, 245, 245),
+            center_thickness,
+            cv2.LINE_AA,
+        )
+
+    # Blend overlay with original for transparency
+    alpha = 0.30 if reinforce else 0.35
     output = cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
     
     return output

@@ -9,13 +9,14 @@ Direct proxy endpoints for Stability AI features:
 
 import base64
 import logging
-from subscriptions.utils import check_and_log_usage
 from io import BytesIO
 from PIL import Image
+from subscriptions.plan_enforcement import check_user_plan_for_request, record_successful_usage
+from .utils.watermark import apply_watermark
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
@@ -23,6 +24,34 @@ logger = logging.getLogger(__name__)
 
 # Stability AI max limit: 9,437,184 pixels (approx 4096x2304)
 MAX_PIXELS = 9_400_000
+
+
+def _add_watermark_to_data_url(data_url):
+    try:
+        if "base64," not in data_url:
+            return data_url
+        import cv2
+        import numpy as np
+
+        header, payload = data_url.split("base64,", 1)
+        raw_bytes = base64.b64decode(payload)
+        nparr = np.frombuffer(raw_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            return data_url
+        watermarked = apply_watermark(img)
+        if "image/webp" in header:
+            ext = ".webp"
+        elif "image/png" in header:
+            ext = ".png"
+        else:
+            ext = ".jpg"
+        ok, buffer = cv2.imencode(ext, watermarked)
+        if not ok:
+            return data_url
+        return f"{header}base64,{base64.b64encode(buffer.tobytes()).decode('utf-8')}"
+    except Exception:
+        return data_url
 
 def resize_image_if_needed(image_bytes):
     """
@@ -62,7 +91,7 @@ class StabilityRateThrottle(UserRateThrottle):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 @throttle_classes([StabilityRateThrottle])
 def remove_background_view(request):
     """
@@ -79,10 +108,9 @@ def remove_background_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Check Usage Limit
-    usage = check_and_log_usage(request.user, "background_remove")
-    if not usage["allowed"]:
-        return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    plan_check = check_user_plan_for_request(request, feature_key="background_remove", consume=False)
+    if not plan_check.get("allowed"):
+        return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
     try:
         from .ai_engine import AIEngine
@@ -93,7 +121,8 @@ def remove_background_view(request):
         
         # Use AIEngine for Smart Multi-Layer Processing (Photoroom -> Stability -> Local)
         # We pass return_path=False to get the processed image bytes/numpy
-        result_img = AIEngine.remove_background(image_bytes, return_path=False)
+        plan_name = str(plan_check.get("plan", "FREE")).lower()
+        result_img = AIEngine.remove_background(image_bytes, return_path=False, plan_name=plan_name)
 
         if result_img is None:
             return Response(
@@ -112,11 +141,18 @@ def remove_background_view(request):
         image_b64 = base64.b64encode(result).decode('utf-8')
         data_url = f"data:image/png;base64,{image_b64}"
 
-        return Response({
+        data = {
             'image': data_url,
             'status': 'success',
-            'engine': 'smart-ai-nobg'
-        })
+            'engine': 'smart-ai-nobg',
+            'plan': plan_check.get("plan"),
+            'priority': plan_check.get("priority", "low")
+        }
+        if plan_check.get("plan_config", {}).get("watermark"):
+            data['image'] = _add_watermark_to_data_url(data['image'])
+
+        record_successful_usage(request, feature_key="background_remove")
+        return Response(data)
 
     except Exception as e:
         logger.error(f"Remove Background error: {e}")
@@ -127,7 +163,7 @@ def remove_background_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 @throttle_classes([StabilityRateThrottle])
 def change_background_view(request):
     """
@@ -146,10 +182,9 @@ def change_background_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Check Usage Limit
-    usage = check_and_log_usage(request.user, "background_remove")
-    if not usage["allowed"]:
-        return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    plan_check = check_user_plan_for_request(request, feature_key="background_remove", consume=False)
+    if not plan_check.get("allowed"):
+        return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
     try:
         from .services.stability_service import StabilityService
@@ -169,11 +204,17 @@ def change_background_view(request):
         image_b64 = base64.b64encode(result).decode('utf-8')
         data_url = f"data:image/webp;base64,{image_b64}"
 
-        return Response({
+        data = {
             'image': data_url,
             'status': 'success',
-            'engine': 'stability-change-bg'
-        })
+            'engine': 'stability-change-bg',
+            'plan': plan_check.get("plan"),
+            'priority': plan_check.get("priority", "low")
+        }
+        if plan_check.get("plan_config", {}).get("watermark"):
+            data['image'] = _add_watermark_to_data_url(data['image'])
+        record_successful_usage(request, feature_key="background_remove")
+        return Response(data)
 
     except Exception as e:
         logger.error(f"Change Background error: {e}")
@@ -184,7 +225,7 @@ def change_background_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 @throttle_classes([StabilityRateThrottle])
 def style_transfer_view(request):
     """
@@ -232,6 +273,10 @@ def style_transfer_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    plan_check = check_user_plan_for_request(request, feature_key="style_transfer", consume=False)
+    if not plan_check.get("allowed"):
+        return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
+
     try:
         from .services.stability_service import StabilityService
 
@@ -272,11 +317,17 @@ def style_transfer_view(request):
         mime_type = "image/jpeg" if output_format == "jpeg" else f"image/{output_format}"
         data_url = f"data:{mime_type};base64,{image_b64}"
 
-        return Response({
+        data = {
             'image': data_url,
             'status': 'success',
-            'engine': 'stability-style-transfer'
-        })
+            'engine': 'stability-style-transfer',
+            'plan': plan_check.get("plan"),
+            'priority': plan_check.get("priority", "low")
+        }
+        if plan_check.get("plan_config", {}).get("watermark"):
+            data['image'] = _add_watermark_to_data_url(data['image'])
+        record_successful_usage(request, feature_key="style_transfer")
+        return Response(data)
 
     except Exception as e:
         logger.error(f"Style Transfer error: {e}")
@@ -288,7 +339,7 @@ def style_transfer_view(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 @throttle_classes([StabilityRateThrottle])
 def conservative_upscale_view(request):
     """
@@ -307,10 +358,9 @@ def conservative_upscale_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Check Usage Limit
-    usage = check_and_log_usage(request.user, "upscaling")
-    if not usage["allowed"]:
-        return Response(usage, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    plan_check = check_user_plan_for_request(request, feature_key="upscaling", consume=False)
+    if not plan_check.get("allowed"):
+        return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
     try:
         from .services.stability_service import StabilityService
@@ -337,12 +387,18 @@ def conservative_upscale_view(request):
         image_b64 = base64.b64encode(result).decode('utf-8')
         data_url = f"data:image/webp;base64,{image_b64}"
 
-        return Response({
+        data = {
             'image': data_url,
             'upscaled_image': image_b64,
             'status': 'success',
-            'engine': 'stability-conservative-upscale'
-        })
+            'engine': 'stability-conservative-upscale',
+            'plan': plan_check.get("plan"),
+            'priority': plan_check.get("priority", "low")
+        }
+        if plan_check.get("plan_config", {}).get("watermark"):
+            data['image'] = _add_watermark_to_data_url(data['image'])
+        record_successful_usage(request, feature_key="upscaling")
+        return Response(data)
 
     except Exception as e:
         logger.error(f"Upscale error: {e}")
@@ -374,9 +430,9 @@ def generate_sticker_view(request):
     if not prompt:
         return Response({'error': 'Prompt is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Check Usage Limit
-    usage = check_and_log_usage(request.user, "image_generation")
-    use_alternative = not usage["allowed"]
+    plan_check = check_user_plan_for_request(request, feature_key="text_to_image", consume=False)
+    if not plan_check.get("allowed"):
+        return Response(plan_check, status=plan_check.get("status_code", status.HTTP_403_FORBIDDEN))
 
     # 1. GENERATE STICKER VIA MULTI-PROVIDER SERVICE
     try:
@@ -406,14 +462,22 @@ def generate_sticker_view(request):
             output_url=output_path
         )
 
-        return Response({
+        response_data = {
             'sticker': data_url,
             'image': data_url,
             'status': 'success',
             'engine': used_engine,
             'saved_path': output_path,
-            'is_alternative': used_engine != "stability"
-        })
+            'is_alternative': used_engine != "stability",
+            'plan': plan_check.get("plan"),
+            'priority': plan_check.get("priority", "low")
+        }
+        if plan_check.get("plan_config", {}).get("watermark"):
+            response_data['sticker'] = _add_watermark_to_data_url(response_data['sticker'])
+            response_data['image'] = response_data['sticker']
+
+        record_successful_usage(request, feature_key="text_to_image")
+        return Response(response_data)
 
     except Exception as e:
         logger.error(f"Generate Sticker error: {e}")

@@ -37,6 +37,7 @@ urlpatterns = [
     path('profile/', ProfileView.as_view(), name='user_profile'),
     path('generate/text-to-image/', generate_image_proxy, name='generate_image_proxy'),
     path('generate/edit-image/', edit_image_proxy, name='edit_image_proxy'),
+    path('edit-image/', edit_image_proxy, name='edit_image_proxy_alias'),
     path('generate-image/', views.text_to_image, name='text_to_image_new'),
     
     # AI Chatbot System
